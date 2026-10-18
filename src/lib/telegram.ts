@@ -1,6 +1,8 @@
 import { incidentStore } from "./store";
 import { runWorkflow } from "./workflow";
-import type { Evidence, Incident, MemoryReference } from "./types";
+import { correctionMemory } from "./memory";
+import { analyseIncident } from "./agents";
+import type { Evidence, Incident } from "./types";
 
 export type TelegramMessage = {
   message_id: number;
@@ -16,15 +18,7 @@ export type TelegramMessage = {
 export type TelegramUpdate = { update_id: number; message?: TelegramMessage };
 export type TelegramIntakeResult = { incidentId?: string; driverReply: string };
 
-function incidentTypeFor(text: string) { return /tyre|puncture|burst/i.test(text) ? "tyre_failure" : "unknown"; }
 function languageFor(text: string) { return /hai|ho gaya|karton/i.test(text) ? "Hinglish" : "English"; }
-function correctionMemoryFor(text: string): MemoryReference | undefined {
-  const incidentType = incidentTypeFor(text);
-  if (incidentType === "unknown") return undefined;
-  const related = incidentStore.list().find((incident) => incident.correction && incident.agents.find((agent) => agent.agent === "Incident Analyst")?.output.incidentType === incidentType);
-  if (!related?.correction) return undefined;
-  return { sourceIncidentId: related.id, incidentType, correctionReason: related.correction.reason, replacementAction: related.correction.replacementAction, relationship: "same-incident-type" };
-}
 function source(message: TelegramMessage, kind: Evidence["kind"], detail: string): Evidence {
   return { id: `tg-${message.message_id}-${kind}`, kind, label: `Telegram ${kind}`, detail, source: "observed", messageId: String(message.message_id) };
 }
@@ -49,7 +43,10 @@ export function handleTelegramUpdate(update: TelegramUpdate): TelegramIntakeResu
 
   const transcript = message.text ?? message.caption ?? "Voice/photo report received";
   const id = incidentStore.createId(); const evidence = evidenceFor(message); const language = languageFor(transcript);
-  const workflow = runWorkflow({ id, driver: message.from?.first_name || "Telegram driver", transcript, language, evidence, memory: correctionMemoryFor(transcript) });
+  // Use the same analyseIncident logic the pipeline uses to derive incidentType for memory lookup.
+  const incidentType = analyseIncident(transcript, evidence).incidentType;
+  const memory = correctionMemory.findRelated(incidentType, id);
+  const workflow = runWorkflow({ id, driver: message.from?.first_name || "Telegram driver", transcript, language, evidence, memory });
   const incident: Incident = { id, status: "PENDING_APPROVAL", createdAt: new Date().toISOString(), driver: message.from?.first_name || "Telegram driver", language, transcript, evidence, ...workflow };
   incidentStore.save(incident);
   return { incidentId: id, driverReply: `Incident ${id} created. ${workflow.driverInstruction}` };
