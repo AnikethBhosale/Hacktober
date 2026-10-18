@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "telegram:poll": "node --experimental-strip-types scripts/telegram-poll.ts",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"

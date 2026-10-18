@@ -27,6 +27,7 @@
       }
     ],
     "allowJs": true,
+    "allowImportingTsExtensions": true,
     "esModuleInterop": true
   },
   "include": [
