@@ -1,4 +1,5 @@
-import type { AgentResult, Evidence, Incident, MemoryReference, Provider, Recommendation } from "./types";
+import type { AgentResult, Evidence, Incident, MemoryReference, Provider, Recommendation, TimelineEvent } from "./types";
+import { analyseIncident, planRecovery, verifyIncident, reconcile } from "./agents";
 
 /** Provider selection is explicit: no configured capability is silently substituted. */
 export function providerFor(capability: "speech" | "multimodal" | "orchestration"): Provider {
@@ -9,31 +10,106 @@ export function providerFor(capability: "speech" | "multimodal" | "orchestration
   throw new Error(`No configured ${capability} provider. Set MOCK_AI=true or configure the required provider.`);
 }
 
-export function runWorkflow(input: { id: string; driver: string; transcript: string; language: string; evidence: Evidence[]; memory?: MemoryReference }): Pick<Incident, "agents" | "recommendation" | "timeline" | "normalizedSummary" | "driverInstruction" | "retrievedMemory"> {
+export function runWorkflow(
+  input: { id: string; driver: string; transcript: string; language: string; evidence: Evidence[]; memory?: MemoryReference }
+): Pick<Incident, "agents" | "recommendation" | "timeline" | "normalizedSummary" | "driverInstruction" | "retrievedMemory"> {
   const time = new Date().toISOString();
   const analystProvider = providerFor("multimodal");
   const orchestratorProvider = providerFor("orchestration");
-  const tyre = /tyre|puncture|burst/i.test(input.transcript);
-  const action = tyre ? "Dispatch backup vehicle and inspect cartons at transfer" : "Escalate for dispatcher review";
-  const recommendation: Recommendation = {
-    action, confidence: tyre ? 0.84 : 0.65, requiresApproval: true, etaMinutes: tyre ? 75 : 45, estimatedCostInr: tyre ? 2400 : 0,
-    explanation: tyre ? "A simulated nearby backup minimizes delay; carton condition needs inspection." : "Evidence is insufficient for an autonomous recovery recommendation.",
-    assumptions: ["Fleet availability and ETA are simulated", "Dispatcher approval is required"],
-    alternatives: [{ action: "Wait for roadside repair", etaMinutes: 130, estimatedCostInr: 900, assumptions: ["Repair crew accepts job"] }, { action: "Escalate to fleet manager", etaMinutes: 30, estimatedCostInr: 0, assumptions: ["Manager is reachable"] }]
-  };
+
+  // — Stage 1: Incident Analyst —
+  const analysis = analyseIncident(input.transcript, input.evidence);
+
+  // — Stage 2: Route Planner —
+  const plan = planRecovery(analysis);
+
+  // — Stage 3: Audit & Verification —
+  const audit = verifyIncident(analysis, plan, input.evidence);
+
+  // — Stage 4: Gemma Orchestrator —
+  const decision = reconcile(analysis, plan, audit, input.memory);
+
+  // Build structured AgentResult records with provenance
   const agents: AgentResult[] = [
-    { agent: "Incident Analyst", provider: analystProvider, createdAt: time, output: { incidentType: tyre ? "tyre_failure" : "unknown", severity: tyre ? "high" : "medium", affectedGoods: "2 cartons reported", unknowns: ["internal package condition"], confidence: 0.82 } },
-    { agent: "Route Planner", provider: analystProvider, createdAt: time, output: { rankedRecoveryActions: [action, "Wait for roadside repair"], etaMinutes: 75, estimatedCostInr: 2400, assumptions: recommendation.assumptions } },
-    { agent: "Audit & Verification", provider: analystProvider, createdAt: time, output: { evidenceCoverage: 0.74, contradictions: [], missingInformation: ["Physical inspection not completed"], safetyFlags: tyre ? ["Do not continue on a damaged tyre"] : [], requiresHumanApproval: true } },
-    { agent: "Gemma Orchestrator", provider: orchestratorProvider, createdAt: time, output: { selectedAction: action, reconciliation: "Analyst, planner and audit all require dispatcher approval.", memoryConsidered: input.memory ? { sourceIncidentId: input.memory.sourceIncidentId, relationship: input.memory.relationship, advisoryOnly: true } : "No relevant correction found" } }
+    {
+      agent: "Incident Analyst",
+      provider: analystProvider,
+      createdAt: time,
+      output: analysis as unknown as Record<string, unknown>,
+    },
+    {
+      agent: "Route Planner",
+      provider: analystProvider,
+      createdAt: time,
+      output: plan as unknown as Record<string, unknown>,
+    },
+    {
+      agent: "Audit & Verification",
+      provider: analystProvider,
+      createdAt: time,
+      output: audit as unknown as Record<string, unknown>,
+    },
+    {
+      agent: "Gemma Orchestrator",
+      provider: orchestratorProvider,
+      createdAt: time,
+      output: {
+        ...decision,
+        memoryConsidered: input.memory
+          ? { sourceIncidentId: input.memory.sourceIncidentId, relationship: input.memory.relationship, advisoryOnly: true }
+          : "No relevant correction found",
+      },
+    },
   ];
+
+  // planRecovery always returns at least one option (schema enforces min(1)),
+  // but guard defensively: if the list is somehow empty, use safe fallbacks
+  // rather than crashing with TypeError on topAction.etaMinutes.
+  const topAction = plan.rankedRecoveryActions[0] ?? {
+    action: decision.selectedAction,
+    etaMinutes: 0,
+    estimatedCostInr: 0,
+    assumptions: ["No recovery options derivable; dispatcher must decide"],
+  };
+  const recommendation: Recommendation = {
+    action: decision.selectedAction,
+    confidence: decision.confidence,
+    requiresApproval: decision.requiresHumanApproval,
+    etaMinutes: topAction.etaMinutes,
+    estimatedCostInr: topAction.estimatedCostInr,
+    explanation: decision.explanation,
+    assumptions: topAction.assumptions,
+    alternatives: plan.rankedRecoveryActions.slice(1).map((opt) => ({
+      action: opt.action,
+      etaMinutes: opt.etaMinutes,
+      estimatedCostInr: opt.estimatedCostInr,
+      assumptions: opt.assumptions,
+    })),
+  };
+
+  const isTyre = analysis.incidentType === "tyre_failure";
+  const isHinglish = /hindi|hinglish/i.test(input.language);
+
+  const timeline: TimelineEvent[] = [
+    { at: time, actor: "Telegram intake", message: "Incident evidence captured.", kind: "intake" },
+    { at: time, actor: "Incident Analyst", message: `Classified ${analysis.incidentType} — severity ${analysis.severity} — confidence ${Math.round(analysis.confidence * 100)}%.`, kind: "handoff" },
+    { at: time, actor: "Route Planner", message: `Ranked ${plan.rankedRecoveryActions.length} recovery option(s). Top: ${decision.selectedAction}.`, kind: "handoff" },
+    { at: time, actor: "Audit & Verification", message: `Evidence coverage ${Math.round(audit.evidenceCoverage * 100)}%. Human approval required: ${String(audit.requiresHumanApproval)}.`, kind: "handoff" },
+    { at: time, actor: "Gemma Orchestrator", message: decision.reconciliation + (decision.clarificationRequest ? ` Clarification needed: ${decision.clarificationRequest}` : ""), kind: "decision" },
+  ];
+
   return {
-    agents, recommendation, retrievedMemory: input.memory,
-    normalizedSummary: tyre ? "Tyre failure reported; two cartons may be damaged." : "Driver submitted an incident report requiring review.",
-    driverInstruction: input.language.toLowerCase().includes("hindi") || input.language.toLowerCase().includes("hinglish") ? "Incident mil gaya. Safe jagah par rukiyé; dispatcher approval ke bina route mat badaliyé." : "Incident received. Stop safely and wait for dispatcher approval before changing your route.",
-    timeline: [
-      { at: time, actor: "Telegram intake", message: "Incident evidence captured.", kind: "intake" },
-      ...agents.map((agent) => ({ at: time, actor: agent.agent, message: `Structured result recorded via ${agent.provider.name}/${agent.provider.model}.`, kind: agent.agent === "Gemma Orchestrator" ? "decision" as const : "handoff" as const }))
-    ]
+    agents,
+    recommendation,
+    retrievedMemory: input.memory,
+    normalizedSummary: isTyre
+      ? "Tyre failure reported; two cartons may be damaged."
+      : analysis.incidentType === "cargo_damage"
+        ? "Cargo damage reported; dispatcher review required."
+        : "Driver submitted an incident report requiring review.",
+    driverInstruction: isHinglish
+      ? "Incident mil gaya. Safe jagah par rukiyé; dispatcher approval ke bina route mat badaliyé."
+      : "Incident received. Stop safely and wait for dispatcher approval before changing your route.",
+    timeline,
   };
 }
