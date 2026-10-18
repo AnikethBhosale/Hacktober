@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { incidentStore } from "@/src/lib/store";
+import { correctionMemory } from "@/src/lib/memory";
 
 type DecisionRequest = { decision: "approve" | "escalate" | "correct"; reason?: string; replacementAction?: string };
 
@@ -23,9 +24,28 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const incident = incidentStore.get(id);
   if (!incident) return NextResponse.json({ error: "Incident not found" }, { status: 404 });
   const at = new Date().toISOString();
-  if (decision.decision === "approve") { incident.status = "APPROVED"; incident.driverInstruction = "Dispatcher approved the recovery plan. Please follow the coordinator's instructions and do not move until the backup arrangement is confirmed."; }
-  if (decision.decision === "escalate") incident.status = "ESCALATED";
-  if (decision.decision === "correct") { incident.status = "CORRECTED"; incident.correction = { reason: decision.reason!, replacementAction: decision.replacementAction!, at }; }
-  incident.timeline.push({ at, actor: "Dispatcher", message: `${decision.decision}${decision.reason ? `: ${decision.reason}` : ""}`, kind: "human" });
-  incidentStore.save(incident); return NextResponse.json({ incident });
+
+  if (decision.decision === "approve") {
+    incident.status = "APPROVED";
+    incident.driverInstruction = "Dispatcher approved the recovery plan. Please follow the coordinator's instructions and do not move until the backup arrangement is confirmed.";
+  }
+  if (decision.decision === "escalate") {
+    incident.status = "ESCALATED";
+  }
+  if (decision.decision === "correct") {
+    incident.status = "CORRECTED";
+    incident.correction = { reason: decision.reason!, replacementAction: decision.replacementAction!, at };
+    // Persist to correction memory so future matching incidents retrieve it as advisory context.
+    const incidentType = (incident.agents.find((a) => a.agent === "Incident Analyst")?.output.incidentType as string) ?? "unknown";
+    correctionMemory.save(id, incidentType, incident.correction);
+  }
+
+  incident.timeline.push({
+    at,
+    actor: "Dispatcher",
+    message: `${decision.decision}${decision.reason ? `: ${decision.reason}` : ""}`,
+    kind: "human",
+  });
+  incidentStore.save(incident);
+  return NextResponse.json({ incident });
 }
