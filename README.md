@@ -8,11 +8,11 @@ RouteSathi is a voice-first dispatcher-control MVP for small Indian fleets. It a
 - Telegram-ready intake endpoint for text, voice, photo, document, and location updates. `/start`, `/report`, `/status <incident-id>`, and `/help` are the intended bot commands (wire the chosen grammY long-poll adapter to `POST /api/telegram/update`).
 - Explicit four-stage workflow: Incident Analyst, Route Planner, Audit & Verification, and Gemma Orchestrator.
 - Deterministic `MOCK_AI=true` mode with three seeded incidents, five drivers, eight vehicles, ten shipments, three backups, and two routes.
-- A provider abstraction which records the provider/model for every agent result and fails loudly when live capabilities are unconfigured. It does not silently fall back.
+- Live mode calls a local **Ollama `gemma4:e2b`** model for analysis, planning, audit, and orchestration. A provider abstraction records the provider/model for every agent result and fails loudly when Ollama is unreachable. It does not silently fall back.
 
 ## Run locally
 
-1. Copy `.env.example` to `.env.local`. Keep `MOCK_AI=true` for a zero-key demo.
+1. Copy `.env.example` to `.env.local`. Set `MOCK_AI=true` for a zero-key demo, or keep `MOCK_AI=false` to use local Ollama.
 2. Install dependencies with `npm install`.
 3. Run `npm run dev`, then open `http://localhost:3000`.
 4. Run `npm run typecheck`, `npm run lint`, `npm test`, and `npm run build` before shipping.
@@ -21,18 +21,22 @@ The local dashboard starts with **RS-102**, a Hinglish tyre-burst / damaged-cart
 
 ## Provider configuration
 
-`MOCK_AI=true` is deliberately the default and all seed outputs visibly say “Deterministic demo.” For live use, set `MOCK_AI=false` and configure the required provider keys in `.env.local`:
+Seeded dashboard rows still say “Deterministic demo.” For live Telegram intake and new incidents, set `MOCK_AI=false`.
 
-- `SARVAM_API_KEY`: Hindi/Hinglish speech transcription (and optional TTS).
-- `GEMMA_API_KEY`: primary multimodal analysis and orchestration. The provider adapter intentionally labels the requested **Gemma 4 E2B** identifier as runtime-verified: set the exact identifier only after confirming it with the selected Gemma runtime. This avoids inventing an endpoint or model ID.
-- `GROQ_API_KEY`, `GEMINI_API_KEY`, `OPENAI_API_KEY`: reserved explicit fallback adapters. Add an adapter and its UI provenance before enabling one; never silently switch.
+Live providers, in order:
+
+1. **Google AI Studio Gemma** (`GEMINI_API_KEY`): analysis, planning, audit, and orchestration. Default model is hosted `gemma-4-26b-a4b-it`. If that model returns 500, the client retries then falls through `GEMMA_FALLBACK_MODELS` (`gemma-4-31b-it`, then `gemini-2.0-flash`). Gemma 4 E2B is an on-device/Ollama size and is not a Gemini API model id.
+2. **Local Ollama** (`gemma4:e2b`) if no Google key is set. Keep `OLLAMA_NUM_CTX=2048` and `OLLAMA_NUM_GPU=0` on laptops to avoid CUDA host-buffer OOMs.
+3. **Sarvam** (`SARVAM_API_KEY`): Hindi/Hinglish/code-mix **speech-to-text** on Telegram voice notes (`saaras:v4`, `mode=codemix`). Text captions still work without Sarvam.
+
+- `GROQ_API_KEY`, `OPENAI_API_KEY`: reserved explicit fallback adapters. Add an adapter and its UI provenance before enabling one; never silently switch.
 
 `prisma/schema.prisma` defines the local SQLite persistence contract (`DATABASE_URL="file:./dev.db"`). The current development store is in-memory to keep the no-key demo instantly runnable; replace it with the Prisma adapter before multi-process deployment.
 
 ## Telegram local setup
 
 1. In Telegram, open `@BotFather`, run `/newbot`, choose a name and a username ending in `bot`, and place the token in `TELEGRAM_BOT_TOKEN` locally. Generate a separate high-entropy value for `TELEGRAM_WEBHOOK_SECRET`; the webhook rejects every request without its matching `X-Telegram-Bot-Api-Secret-Token` header.
-2. Use long polling locally with `npm run telegram:poll`; it calls the Telegram Bot API directly and does not require a public URL. Do not commit the token.
+2. Use long polling locally with `npm run telegram:poll` while `npm run dev` is running. The poller forwards updates to `http://127.0.0.1:3000/api/telegram/update` so new incidents land in the same store the dashboard reads (`data/incidents.json`). Do not commit the token.
 3. `/start` introduces privacy/consent; `/report` explains supported evidence; `/status <incident-id>` returns status; `/help` lists formats.
 4. For production webhook testing, expose a public HTTPS URL and register it with `https://api.telegram.org/bot<TOKEN>/setWebhook?url=<PUBLIC_HTTPS_URL>/api/telegram/update&secret_token=<TELEGRAM_WEBHOOK_SECRET>`. Keep the token and secret out of terminal history and source control.
 

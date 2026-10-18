@@ -217,7 +217,11 @@ export default function Dashboard() {
     }
   }, []);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+    const timer = window.setInterval(() => { void load(); }, 4000);
+    return () => window.clearInterval(timer);
+  }, [load]);
 
   async function decide(decision: "approve" | "escalate" | "correct", reason?: string, replacementAction?: string) {
     if (!selected) return;

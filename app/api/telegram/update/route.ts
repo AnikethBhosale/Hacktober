@@ -8,7 +8,7 @@ export async function POST(request: NextRequest) {
   if (request.headers.get("x-telegram-bot-api-secret-token") !== secret) return NextResponse.json({ error: "Unauthorized Telegram webhook" }, { status: 401 });
   let update: TelegramUpdate;
   try { update = await request.json() as TelegramUpdate; } catch { return NextResponse.json({ error: "Invalid Telegram update" }, { status: 400 }); }
-  const result = handleTelegramUpdate(update);
+  const result = await handleTelegramUpdate(update);
   if (!result || !update.message) return NextResponse.json({ ok: true });
   const delivery = await sendTelegramMessage(update.message.chat.id, result.driverReply).catch((error: unknown) => ({ delivered: false, reason: error instanceof Error ? error.message : "Unable to send Telegram reply" }));
   return NextResponse.json({ ok: true, incidentId: result.incidentId, delivery });

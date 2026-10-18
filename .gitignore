@@ -6,4 +6,5 @@ tsconfig.tsbuildinfo
 *.db
 .env
 .env.local
+data/*.json
 

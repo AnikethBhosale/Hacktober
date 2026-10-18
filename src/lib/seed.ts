@@ -1,4 +1,4 @@
-import type { Incident } from "./types";
+import type { Incident } from "./types.ts";
 
 const now = new Date("2026-10-18T09:15:00+05:30").toISOString();
 const mock = { name: "Deterministic demo", model: "routesathi-mock-v1", mode: "mock" as const };

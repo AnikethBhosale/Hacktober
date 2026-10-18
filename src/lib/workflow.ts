@@ -1,33 +1,42 @@
-import type { AgentResult, Evidence, Incident, MemoryReference, Provider, Recommendation, TimelineEvent } from "./types";
-import { analyseIncident, planRecovery, verifyIncident, reconcile } from "./agents";
+import type { AgentResult, Evidence, Incident, MemoryReference, Provider, Recommendation, TimelineEvent } from "./types.ts";
+import { runAuditor, runIncidentAnalyst, runOrchestrator, runRoutePlanner } from "./agents.ts";
+import { correctionMemory } from "./memory.ts";
+import { geminiApiKey, gemmaModel } from "./gemma.ts";
+import { ollamaConfig, useMockAi } from "./ollama.ts";
+import { sarvamModel } from "./sarvam.ts";
 
 /** Provider selection is explicit: no configured capability is silently substituted. */
 export function providerFor(capability: "speech" | "multimodal" | "orchestration"): Provider {
-  const mock = process.env.MOCK_AI !== "false";
-  if (mock) return { name: "Deterministic demo", model: "routesathi-mock-v1", mode: "mock" };
-  if (capability === "speech" && process.env.SARVAM_API_KEY) return { name: "Sarvam", model: "configured-at-runtime", mode: "live" };
-  if (process.env.GEMMA_API_KEY) return { name: "Gemma", model: "Gemma 4 E2B (verify provider identifier)", mode: "live" };
-  throw new Error(`No configured ${capability} provider. Set MOCK_AI=true or configure the required provider.`);
+  if (useMockAi()) return { name: "Deterministic demo", model: "routesathi-mock-v1", mode: "mock" };
+  if (capability === "speech") {
+    if (!process.env.SARVAM_API_KEY) throw new Error("No configured speech provider. Set MOCK_AI=true or SARVAM_API_KEY.");
+    return { name: "Sarvam", model: sarvamModel(), mode: "live" };
+  }
+  if (geminiApiKey()) return { name: "Google AI Studio", model: gemmaModel(), mode: "live" };
+  const { model } = ollamaConfig();
+  return { name: "Ollama", model, mode: "live" };
 }
 
-export function runWorkflow(
+export async function runWorkflow(
   input: { id: string; driver: string; transcript: string; language: string; evidence: Evidence[]; memory?: MemoryReference }
-): Pick<Incident, "agents" | "recommendation" | "timeline" | "normalizedSummary" | "driverInstruction" | "retrievedMemory"> {
+): Promise<Pick<Incident, "agents" | "recommendation" | "timeline" | "normalizedSummary" | "driverInstruction" | "retrievedMemory">> {
   const time = new Date().toISOString();
   const analystProvider = providerFor("multimodal");
   const orchestratorProvider = providerFor("orchestration");
 
   // — Stage 1: Incident Analyst —
-  const analysis = analyseIncident(input.transcript, input.evidence);
+  const analysis = await runIncidentAnalyst(input.transcript, input.evidence);
 
   // — Stage 2: Route Planner —
-  const plan = planRecovery(analysis);
+  const plan = await runRoutePlanner(analysis);
 
   // — Stage 3: Audit & Verification —
-  const audit = verifyIncident(analysis, plan, input.evidence);
+  const audit = await runAuditor(analysis, plan, input.evidence);
 
-  // — Stage 4: Gemma Orchestrator —
-  const decision = reconcile(analysis, plan, audit, input.memory);
+  const memory = input.memory ?? correctionMemory.findRelated(analysis.incidentType, input.id);
+
+  // — Stage 4: Gemma Orchestrator (Google AI Studio Gemma, else local Ollama) —
+  const decision = await runOrchestrator(analysis, plan, audit, memory);
 
   // Build structured AgentResult records with provenance
   const agents: AgentResult[] = [
@@ -55,8 +64,8 @@ export function runWorkflow(
       createdAt: time,
       output: {
         ...decision,
-        memoryConsidered: input.memory
-          ? { sourceIncidentId: input.memory.sourceIncidentId, relationship: input.memory.relationship, advisoryOnly: true }
+        memoryConsidered: memory
+          ? { sourceIncidentId: memory.sourceIncidentId, relationship: memory.relationship, advisoryOnly: true }
           : "No relevant correction found",
       },
     },
@@ -101,7 +110,7 @@ export function runWorkflow(
   return {
     agents,
     recommendation,
-    retrievedMemory: input.memory,
+    retrievedMemory: memory,
     normalizedSummary: isTyre
       ? "Tyre failure reported; two cartons may be damaged."
       : analysis.incidentType === "cargo_damage"
