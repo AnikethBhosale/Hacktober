@@ -1,4 +1,4 @@
-import type { AgentResult, Evidence, Incident, Provider, Recommendation } from "./types";
+import type { AgentResult, Evidence, Incident, MemoryReference, Provider, Recommendation } from "./types";
 
 /** Provider selection is explicit: no configured capability is silently substituted. */
 export function providerFor(capability: "speech" | "multimodal" | "orchestration"): Provider {
@@ -9,7 +9,7 @@ export function providerFor(capability: "speech" | "multimodal" | "orchestration
   throw new Error(`No configured ${capability} provider. Set MOCK_AI=true or configure the required provider.`);
 }
 
-export function runWorkflow(input: { id: string; driver: string; transcript: string; language: string; evidence: Evidence[]; memory?: string }): Pick<Incident, "agents" | "recommendation" | "timeline" | "normalizedSummary" | "driverInstruction" | "retrievedMemory"> {
+export function runWorkflow(input: { id: string; driver: string; transcript: string; language: string; evidence: Evidence[]; memory?: MemoryReference }): Pick<Incident, "agents" | "recommendation" | "timeline" | "normalizedSummary" | "driverInstruction" | "retrievedMemory"> {
   const time = new Date().toISOString();
   const analystProvider = providerFor("multimodal");
   const orchestratorProvider = providerFor("orchestration");
@@ -25,7 +25,7 @@ export function runWorkflow(input: { id: string; driver: string; transcript: str
     { agent: "Incident Analyst", provider: analystProvider, createdAt: time, output: { incidentType: tyre ? "tyre_failure" : "unknown", severity: tyre ? "high" : "medium", affectedGoods: "2 cartons reported", unknowns: ["internal package condition"], confidence: 0.82 } },
     { agent: "Route Planner", provider: analystProvider, createdAt: time, output: { rankedRecoveryActions: [action, "Wait for roadside repair"], etaMinutes: 75, estimatedCostInr: 2400, assumptions: recommendation.assumptions } },
     { agent: "Audit & Verification", provider: analystProvider, createdAt: time, output: { evidenceCoverage: 0.74, contradictions: [], missingInformation: ["Physical inspection not completed"], safetyFlags: tyre ? ["Do not continue on a damaged tyre"] : [], requiresHumanApproval: true } },
-    { agent: "Gemma Orchestrator", provider: orchestratorProvider, createdAt: time, output: { selectedAction: action, reconciliation: "Analyst, planner and audit all require dispatcher approval.", memoryConsidered: input.memory ?? "No relevant correction found" } }
+    { agent: "Gemma Orchestrator", provider: orchestratorProvider, createdAt: time, output: { selectedAction: action, reconciliation: "Analyst, planner and audit all require dispatcher approval.", memoryConsidered: input.memory ? { sourceIncidentId: input.memory.sourceIncidentId, relationship: input.memory.relationship, advisoryOnly: true } : "No relevant correction found" } }
   ];
   return {
     agents, recommendation, retrievedMemory: input.memory,

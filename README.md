@@ -31,11 +31,11 @@ The local dashboard starts with **RS-102**, a Hinglish tyre-burst / damaged-cart
 
 ## Telegram local setup
 
-1. In Telegram, open `@BotFather`, run `/newbot`, choose a name and a username ending in `bot`, and place the token in `TELEGRAM_BOT_TOKEN` locally.
+1. In Telegram, open `@BotFather`, run `/newbot`, choose a name and a username ending in `bot`, and place the token in `TELEGRAM_BOT_TOKEN` locally. Generate a separate high-entropy value for `TELEGRAM_WEBHOOK_SECRET`; the webhook rejects every request without its matching `X-Telegram-Bot-Api-Secret-Token` header.
 2. Use long polling in the local grammY adapter; do not commit the token.
 3. `/start` introduces privacy/consent; `/report` explains supported evidence; `/status <incident-id>` returns status; `/help` lists formats.
-4. For production webhook testing, expose a public HTTPS URL and register it with `https://api.telegram.org/bot<TOKEN>/setWebhook?url=<PUBLIC_HTTPS_URL>/api/telegram/update`. Keep the token out of terminal history and source control.
+4. For production webhook testing, expose a public HTTPS URL and register it with `https://api.telegram.org/bot<TOKEN>/setWebhook?url=<PUBLIC_HTTPS_URL>/api/telegram/update&secret_token=<TELEGRAM_WEBHOOK_SECRET>`. Keep the token and secret out of terminal history and source control.
 
 ## Trust model
 
-The UI labels evidence as **observed**, **simulated**, or **memory**. Recommendations are model inference, values such as backup availability are simulated data, and dispatcher actions are human decisions. The driver only receives an instruction that approval is pending until a dispatcher approves.
+The UI labels evidence as **observed** or **simulated**. Retrieved correction memory is separately labelled as advisory, carries its source incident ID and relationship, and is never evidence or an automatic override. Recommendations are model inference, values such as backup availability are simulated data, and dispatcher actions are human decisions. The driver only receives an instruction that approval is pending until a dispatcher approves.
