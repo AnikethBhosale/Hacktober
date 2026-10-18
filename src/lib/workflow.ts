@@ -62,7 +62,15 @@ export function runWorkflow(
     },
   ];
 
-  const topAction = plan.rankedRecoveryActions[0];
+  // planRecovery always returns at least one option (schema enforces min(1)),
+  // but guard defensively: if the list is somehow empty, use safe fallbacks
+  // rather than crashing with TypeError on topAction.etaMinutes.
+  const topAction = plan.rankedRecoveryActions[0] ?? {
+    action: decision.selectedAction,
+    etaMinutes: 0,
+    estimatedCostInr: 0,
+    assumptions: ["No recovery options derivable; dispatcher must decide"],
+  };
   const recommendation: Recommendation = {
     action: decision.selectedAction,
     confidence: decision.confidence,

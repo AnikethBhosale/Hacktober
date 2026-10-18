@@ -13,22 +13,29 @@ import {
 export function analyseIncident(transcript: string, evidence: Evidence[]): IncidentAnalysis {
   const tyre = /tyre|puncture|burst/i.test(transcript);
   const hasPhoto = evidence.some((e) => e.kind === "photo");
-  const damage =
-    /damage|damaged|carton|box|wet|crush/i.test(transcript) || hasPhoto;
+  // A photo alone is not sufficient to classify cargo_damage — the transcript
+  // must describe damage. A photo only upgrades confidence when damage IS reported.
+  const damageInTranscript = /damage|damaged|carton|box|wet|crush/i.test(transcript);
+  const damage = damageInTranscript;
   const locationShared = evidence.some((e) => e.kind === "location");
 
   const incidentType = tyre ? "tyre_failure" : damage ? "cargo_damage" : "unknown";
   const severity = tyre ? "high" : damage ? "medium" : "medium";
+  // Only assert carton quantity when the transcript explicitly mentions it.
+  const cartonMatch = transcript.match(/(\d+)\s*carton/i);
   const affectedGoods = damage
-    ? hasPhoto
-      ? "2 cartons with possible visible damage (photo evidence; unconfirmed)"
-      : "Affected goods reported by driver (no photo; unconfirmed)"
+    ? cartonMatch
+      ? `${cartonMatch[1]} carton(s) reported by driver${hasPhoto ? " and possibly visible in photo" : ""} (unconfirmed)`
+      : hasPhoto
+        ? "Possible goods damage visible in photo; quantity not specified by driver (unconfirmed)"
+        : "Affected goods reported by driver; no photo or quantity provided (unconfirmed)"
     : "No affected goods confirmed";
   const unknowns: string[] = ["Physical condition has not been verified by an inspector"];
   if (!locationShared) unknowns.push("Exact location not shared");
   if (tyre) unknowns.push("Tyre repairability unknown");
   if (damage && !hasPhoto) unknowns.push("No photo evidence for cargo damage claim");
 
+  // Photo evidence raises confidence only when damage is already reported in transcript.
   const confidence = tyre ? 0.82 : damage && hasPhoto ? 0.71 : damage ? 0.64 : 0.5;
 
   return incidentAnalysisSchema.parse({ incidentType, severity, affectedGoods, unknowns, confidence });
@@ -72,7 +79,11 @@ export function verifyIncident(analysis: IncidentAnalysis, plan: RoutePlan, evid
   }
 
   const evidenceCoverage = hasObserved && hasPhoto ? 0.82 : hasObserved ? 0.74 : hasPhoto ? 0.55 : 0.2;
-  const confidence = Math.min(analysis.confidence, hasObserved ? 0.82 : 0.42);
+  // When there is no observed evidence the audit applies a coverage penalty
+  // rather than capping analyst confidence at 0.42. This avoids understating
+  // confidence for a well-supported transcript-only tyre report.
+  const observationBonus = hasObserved ? 0 : -0.15;
+  const confidence = Math.max(0, Math.min(1, analysis.confidence + observationBonus));
 
   return auditReportSchema.parse({
     evidenceCoverage,
